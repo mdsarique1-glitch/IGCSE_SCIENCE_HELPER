@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 import Layout from './components/Layout';
 import MainView from './components/MainView';
 import QuizFlow from './components/QuizFlow';
@@ -128,6 +129,7 @@ const App: React.FC = () => {
   return (
     <Layout onHomeClick={resetApp}>
       {renderContent()}
+      <SpeedInsights />
     </Layout>
   );
 };
