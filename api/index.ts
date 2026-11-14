@@ -15,7 +15,7 @@ const getAiClient = (): GoogleGenAI => {
 };
 
 const primaryModel = 'gemini-3.1-flash-lite';
-const fallbackModel = 'gemini-3.8-flash';
+const fallbackModel = 'gemini-4-hydrogen';
 
 // In-memory cache per warm serverless instance to reduce API calls
 const explanationCache = new Map<string, any>();
@@ -303,6 +303,9 @@ app.get('/api/health', (_req, res) => {
 // Generate Quiz Questions Endpoint
 app.post('/api/generate-quiz-questions', async (req, res) => {
   try {
+    if (!getApiKey()) {
+      return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
+    }
     const { categories, questionCount, syllabusLevel, subject, seed } = req.body;
     if (!categories || !Array.isArray(categories) || categories.length === 0) {
       return res.status(400).json({ error: 'Categories are required' });
@@ -607,6 +610,9 @@ Task: Explain a multiple-choice question to an IGCSE student who answered it inc
 // Streaming Content Endpoint (SSE)
 app.post('/api/gemini/stream', async (req, res) => {
   try {
+    if (!getApiKey()) {
+      return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
+    }
     const ai = getAiClient();
     const { prompt, systemInstruction } = req.body;
     if (!prompt) {
@@ -633,9 +639,17 @@ app.post('/api/gemini/stream', async (req, res) => {
     res.end();
   } catch (error: any) {
     console.error('Streaming error:', error);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: error.message || 'Stream error' });
+    }
     res.write(`data: ${JSON.stringify({ error: error.message || 'Stream error' })}\n\n`);
     res.end();
   }
+});
+
+// Return JSON 404 for unknown /api/* routes instead of falling through
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'API endpoint not found' });
 });
 
 export default app;
