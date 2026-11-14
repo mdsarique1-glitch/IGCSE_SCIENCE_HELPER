@@ -306,7 +306,7 @@ app.post('/api/generate-quiz-questions', async (req, res) => {
     if (!getApiKey()) {
       return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
     }
-    const { categories, questionCount, syllabusLevel, subject, seed } = req.body;
+    const { categories, questionCount, syllabusLevel, subject, seed, offset, limit } = req.body;
     if (!categories || !Array.isArray(categories) || categories.length === 0) {
       return res.status(400).json({ error: 'Categories are required' });
     }
@@ -357,33 +357,53 @@ app.post('/api/generate-quiz-questions', async (req, res) => {
     const shuffledPoints = shuffleArray(allPoints, prng);
     const pointsForQuiz = shuffledPoints.slice(0, count);
 
-    // Generate in batch sizes of up to 10 at once to avoid quota exhaustion
-    const BATCH_SIZE = Math.min(count, 10);
-    const generatedQuestions: any[] = [];
+    const startOffset = typeof offset === 'number' && offset >= 0 ? offset : 0;
+    const chunkLimit = typeof limit === 'number' && limit > 0 ? limit : pointsForQuiz.length;
+    const targetPoints = pointsForQuiz.slice(startOffset, startOffset + chunkLimit);
 
-    for (let i = 0; i < pointsForQuiz.length; i += BATCH_SIZE) {
-      const batchPoints = pointsForQuiz.slice(i, i + BATCH_SIZE);
-      const batchSeed = quizSeed + i;
-      try {
-        const batchResult = await withRetry(() => generateQuestionBatch(batchPoints, subject || 'physics', batchSeed));
-        if (Array.isArray(batchResult)) {
-          generatedQuestions.push(...batchResult);
-        }
-      } catch (batchErr) {
-        console.warn("Batch question generation failed, falling back to individual questions:", batchErr);
-        for (let j = 0; j < batchPoints.length; j++) {
-          try {
-            const single = await withRetry(() => generateSingleQuestion(batchPoints[j], subject || 'physics', batchSeed + j));
-            if (single) generatedQuestions.push(single);
-          } catch (singleErr) {
-            console.warn(`Failed to generate individual question for point "${batchPoints[j]}":`, singleErr);
-          }
-        }
-      }
+    if (targetPoints.length === 0) {
+      return res.json([]);
     }
 
-    const prngForShuffle = mulberry32(quizSeed + 1);
-    const validatedQuestions = generatedQuestions.map((q: any) => {
+    // Keep batches small (<= 3) and run concurrently so each serverless invocation finishes well within Vercel timeouts
+    const BATCH_SIZE = 3;
+    const batchTasks: Array<{ batchPoints: string[]; batchSeed: number }> = [];
+    for (let i = 0; i < targetPoints.length; i += BATCH_SIZE) {
+      batchTasks.push({
+        batchPoints: targetPoints.slice(i, i + BATCH_SIZE),
+        batchSeed: quizSeed + startOffset + i,
+      });
+    }
+
+    const batchResults = await Promise.all(
+      batchTasks.map(async ({ batchPoints, batchSeed }) => {
+        try {
+          const batchResult = await withRetry(
+            () => generateQuestionBatch(batchPoints, subject || 'physics', batchSeed),
+            1,
+            300
+          );
+          if (Array.isArray(batchResult) && batchResult.length > 0) {
+            return batchResult;
+          }
+        } catch (batchErr) {
+          console.warn("Batch question generation failed, falling back to parallel single questions:", batchErr);
+        }
+
+        const singleResults = await Promise.allSettled(
+          batchPoints.map((pt, j) =>
+            generateSingleQuestion(pt, subject || 'physics', batchSeed + j)
+          )
+        );
+        return singleResults
+          .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && Boolean(r.value))
+          .map(r => r.value);
+      })
+    );
+
+    const generatedQuestions = batchResults.flat();
+
+    const validatedQuestions = generatedQuestions.map((q: any, idx: number) => {
       if (!q || !q.question || !Array.isArray(q.options) || q.options.length === 0 || !q.correctAnswer) {
         return null;
       }
@@ -403,9 +423,10 @@ app.post('/api/generate-quiz-questions', async (req, res) => {
         }
       }
 
-      const shuffledOptions = shuffleArray(options, prngForShuffle);
+      const prngForOptionShuffle = mulberry32(quizSeed + startOffset + idx + 1);
+      const shuffledOptions = shuffleArray(options, prngForOptionShuffle);
       return {
-        questionId: q.questionId || `Q-${quizSeed}`,
+        questionId: q.questionId || `Q-${quizSeed}-${startOffset + idx}`,
         syllabusRef: q.syllabusRef || undefined,
         questionType: q.questionType || 'conceptual',
         question: q.question,
@@ -416,7 +437,7 @@ app.post('/api/generate-quiz-questions', async (req, res) => {
       };
     }).filter((q): q is any => q !== null);
 
-    if (validatedQuestions.length === 0 && pointsForQuiz.length > 0) {
+    if (validatedQuestions.length === 0 && targetPoints.length > 0) {
       return res.status(500).json({
         error: `The AI model failed to generate valid questions for the selected topics. Please try again with a broader range of topics.`
       });

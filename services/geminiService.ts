@@ -8,13 +8,68 @@ import type {
   QuestionExplanation,
 } from '../types';
 
+const QUIZ_CHUNK_SIZE = 3;
+const MAX_CONCURRENT_CHUNKS = 4;
+
+const fetchQuizChunk = async (
+  payloadCategories: Array<{ name: string; topics: Topic[] }>,
+  studentName: string,
+  questionCount: number,
+  syllabusLevel: 'core' | 'extended',
+  subject: 'physics' | 'biology' | 'chemistry',
+  seed: number,
+  offset: number,
+  limit: number,
+  signal?: AbortSignal
+): Promise<QuizQuestion[]> => {
+  const maxAttempts = 2;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const response = await fetch('/api/generate-quiz-questions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      body: JSON.stringify({
+        studentName,
+        categories: payloadCategories,
+        questionCount,
+        syllabusLevel,
+        subject,
+        seed,
+        offset,
+        limit,
+      }),
+    });
+
+    if (response.ok) {
+      return await response.json();
+    }
+
+    const errorData = await response.json().catch(() => ({}));
+    const message = errorData.error || `Server responded with status ${response.status}`;
+
+    // Do not retry client validation errors (4xx)
+    if (response.status >= 400 && response.status < 500) {
+      throw new Error(message);
+    }
+
+    if (attempt < maxAttempts - 1 && !signal?.aborted) {
+      await new Promise(resolve => setTimeout(resolve, 400));
+      continue;
+    }
+
+    throw new Error(message);
+  }
+  return [];
+};
+
 export const generateQuizQuestions = async (
   studentName: string,
   categories: Category[],
   questionCount: number,
   syllabusLevel: 'core' | 'extended',
   subject: 'physics' | 'biology' | 'chemistry',
-  seed?: number
+  seed?: number,
+  signal?: AbortSignal
 ): Promise<QuizQuestion[]> => {
   // Sanitize categories to remove React node icons before sending JSON
   const payloadCategories = categories.map(c => ({
@@ -22,26 +77,41 @@ export const generateQuizQuestions = async (
     topics: c.topics,
   }));
 
-  const response = await fetch('/api/generate-quiz-questions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      studentName,
-      categories: payloadCategories,
-      questionCount,
-      syllabusLevel,
-      subject,
-      seed,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || `Server responded with status ${response.status}`);
+  const effectiveSeed = typeof seed === 'number' ? seed : Math.floor(Math.random() * 1000000);
+  const chunks: Array<{ offset: number; limit: number }> = [];
+  for (let offset = 0; offset < questionCount; offset += QUIZ_CHUNK_SIZE) {
+    chunks.push({
+      offset,
+      limit: Math.min(QUIZ_CHUNK_SIZE, questionCount - offset),
+    });
   }
 
-  const data: QuizQuestion[] = await response.json();
-  return data;
+  const chunkResults: QuizQuestion[][] = new Array(chunks.length);
+  let nextChunkIndex = 0;
+
+  const runWorker = async () => {
+    while (nextChunkIndex < chunks.length) {
+      if (signal?.aborted) return;
+      const idx = nextChunkIndex++;
+      const { offset, limit } = chunks[idx];
+      chunkResults[idx] = await fetchQuizChunk(
+        payloadCategories,
+        studentName,
+        questionCount,
+        syllabusLevel,
+        subject,
+        effectiveSeed,
+        offset,
+        limit,
+        signal
+      );
+    }
+  };
+
+  const workerCount = Math.min(MAX_CONCURRENT_CHUNKS, chunks.length);
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+
+  return chunkResults.flat().filter(Boolean);
 };
 
 export const getCertificateData = async (
@@ -158,6 +228,9 @@ export const getFriendlyErrorMessage = (error: unknown): string => {
     const message = error.message;
     if (message.includes('503') || message.includes('UNAVAILABLE') || message.includes('busy')) {
       return "The AI model is currently busy and could not generate the quiz. Please try again in a moment.";
+    }
+    if (message.includes('504') || message.toLowerCase().includes('timeout')) {
+      return "The request timed out while generating questions. Please try again or select fewer questions.";
     }
     return message;
   }

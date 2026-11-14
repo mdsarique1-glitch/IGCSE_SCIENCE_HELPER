@@ -68,6 +68,7 @@ const QuizView: React.FC<{
     }, [loading]);
 
     useEffect(() => {
+        const controller = new AbortController();
         const fetchQuestions = async () => {
             setLoading(true);
 
@@ -83,14 +84,14 @@ const QuizView: React.FC<{
             }
 
             try {
-                const fetchedQuestions = await generateQuizQuestions(studentName, selectedCategories, config.questionCount, config.syllabusLevel, config.subject, config.seed);
-                if (isCancelledRef.current) return;
+                const fetchedQuestions = await generateQuizQuestions(studentName, selectedCategories, config.questionCount, config.syllabusLevel, config.subject, config.seed, controller.signal);
+                if (isCancelledRef.current || controller.signal.aborted) return;
                 if (fetchedQuestions.length === 0) {
                     throw new Error("The AI failed to generate any questions for this topic. This can happen with very specific topic combinations. Please try again with different options.");
                 }
                 setQuestions(fetchedQuestions);
             } catch (err) {
-                if (isCancelledRef.current) return;
+                if (isCancelledRef.current || controller.signal.aborted) return;
                 const friendlyMessage = getFriendlyErrorMessage(err);
                 const fullErrorMessage = `Failed to start the quiz. ${friendlyMessage}`;
                 setError(fullErrorMessage);
@@ -99,12 +100,13 @@ const QuizView: React.FC<{
                     onCompleteRef.current({ correctAnswers: 0, incorrectAnswers: 0, totalQuestions: 0, error: true, errorMessage: fullErrorMessage, subject: config.subject });
                 }
             } finally {
-                if (!isCancelledRef.current) {
+                if (!isCancelledRef.current && !controller.signal.aborted) {
                     setLoading(false);
                 }
             }
         };
         fetchQuestions();
+        return () => controller.abort();
     }, [config, studentName]);
 
      useEffect(() => {
