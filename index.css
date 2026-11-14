@@ -1,0 +1,53 @@
+/* 3D Flashcard flip utility classes */
+.perspective-1000 {
+  perspective: 1000px;
+  -webkit-perspective: 1000px;
+}
+
+.transform-style-3d {
+  transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+}
+
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.rotate-y-180 {
+  transform: rotateY(180deg);
+  -webkit-transform: rotateY(180deg);
+}
+
+/* Custom animation for card flip hint */
+@keyframes pulseSubtle {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.02);
+  }
+}
+
+.animate-pulse-subtle {
+  animation: pulseSubtle 3s ease-in-out infinite;
+}
+
+/* Systematic KaTeX inline & display alignment for quiz questions and options */
+.math-text-root .katex {
+  font-size: 1.06em;
+  line-height: 1.35;
+  color: inherit;
+}
+
+.math-text-root .katex-display {
+  margin: 0.45rem 0;
+  padding: 0.25rem 0.5rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.math-inline {
+  margin: 0 0.08em;
+  vertical-align: baseline;
+}
